@@ -1,0 +1,57 @@
+steps:
+  # Step 0: Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/python-app', '.']
+
+  # Step 1: Push Docker image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/python-app']
+
+  # Step 2: Apply Terraform and save output to a file
+  - name: 'hashicorp/terraform:light'
+    dir: '<DIRECTORY_NAME>'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init
+        terraform apply -auto-approve
+        terraform output -raw kubernetes_cluster_name > /workspace/cluster_name.txt
+    volumes:
+      - name: 'terraform-config'
+        path: '/workspace/terraform'
+
+  # Step 3: Configure kubectl with GKE cluster credentials
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Set the cluster name as a local shell variable
+        cluster_name=$(cat /workspace/cluster_name.txt)
+        gcloud container clusters get-credentials "$cluster_name" --region us-central1
+        # Export environment variables for the next steps
+        echo "CLOUDSDK_CONTAINER_CLUSTER=$cluster_name" >> /workspace/cluster_env.sh
+        echo "CLOUDSDK_COMPUTE_REGION=us-central1" >> /workspace/cluster_env.sh
+    volumes:
+      - name: 'terraform-config'
+        path: '/workspace/terraform'
+
+  # Step 4: Deploy application to GKE cluster, with environment variables set
+  - name: 'gcr.io/cloud-builders/kubectl'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Source the environment variables for kubectl
+        source /workspace/cluster_env.sh
+        kubectl apply -f k8s-deployment.yaml
+
+images:
+  - 'gcr.io/$PROJECT_ID/python-app'
+
+timeout: '900s'
+serviceAccount: 'projects/$PROJECT_ID/serviceAccounts/<SERVICE_ACCOUNT>'
+logsBucket: 'GCS_BUCKET_NAME'
+options:
+  logging: GCS_ONLY
